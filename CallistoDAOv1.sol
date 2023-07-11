@@ -463,6 +463,15 @@ abstract contract DAOInterface {
         address creator;
     }
 
+    // Callisto DAO: new structure for accepting tokens as payments.
+    /* Just a template! Further clarification required.
+    struct PaymentMethod
+    {
+        bool    isAccepted;
+        uint256 depositFee;
+    }
+    */
+
     // @dev Constructor setting the Curator and the address
     // for the contract able to create another DAO as well as the parameters
     // for the DAO Token Creation
@@ -630,10 +639,15 @@ abstract contract DAOInterface {
 contract DAO is DAOInterface, Token, TokenCreation {
 
     bool public setupMode = true;
+    address public creator = msg.sender;
+
+    // Further clarification required.
+    // mapping (address => PaymentMethod) public payment_methods;
 
     modifier onlySetupMode
     {
         require(setupMode, "This function is only available in setup mode.");
+        require(msg.sender == creator, "This function can be called by the creator of the contract during Setup Mode only.");
         _;
     }
 
@@ -722,7 +736,9 @@ contract DAO is DAOInterface, Token, TokenCreation {
 
         // to prevent a 51% attacker to convert the ether into deposit
         if (msg.sender == address(this))
+        {
             revert();
+        }
 
         _proposalID = proposals.length + 1;
         Proposal storage p = proposals[_proposalID];
@@ -1194,8 +1210,17 @@ contract DAO is DAOInterface, Token, TokenCreation {
         p.votedYes[msg.sender] = true;
     }
 
+    function SETUP_addCurator(address _curator, uint256 _weight) external onlySetupMode
+    {
+        curatorWeight[_curator] = _weight;
+    }
+
+
+    /* Just a template for now. Multicurrency DAO is not yet implemented.
+    // Further clarifications required.
     function addPaymentMethod(address _token, uint256 _proposalFeeMin) public onlyCurators
     {
 
     }
+    */
 }

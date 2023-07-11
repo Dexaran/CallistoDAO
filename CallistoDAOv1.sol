@@ -423,7 +423,8 @@ abstract contract DAOInterface {
 
     // A proposal with `newCurator == false` represents a transaction
     // to be issued by this DAO
-    // A proposal with `newCurator == true` represents a DAO split
+    // A proposal with `newCurator == true` represents a modification of curators weight
+    // a new curator can be assigned by increasing curatorWeight of an existing account to above zero.
     struct Proposal {
         // The address where the `amount` will go to if the proposal is accepted
         // or if `newCurator` is true, the proposed Curator of

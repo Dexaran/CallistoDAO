@@ -597,7 +597,7 @@ abstract contract DAOInterface {
     // @notice Withdraw `_account`'s portion of the reward from `rewardAccount`
     // to `_account`'s balance
     // @return Whether the call was successful
-    function withdrawRewardFor(address _account) internal virtual returns (bool _success);
+    function withdrawRewardFor(address _account) public virtual returns (bool _success);
 
     // @notice Send `_amount` tokens to `_to` from `msg.sender`. Prior to this
     // getMyReward() is called.
@@ -1027,7 +1027,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
     }
 
 
-    function withdrawRewardFor(address _account)  internal override returns (bool _success) {
+    function withdrawRewardFor(address _account) public override returns (bool _success) {
         if ((balanceOf(_account) * rewardAccount.accumulatedInput()) / totalSupply < paidOut[_account])
             revert();
 

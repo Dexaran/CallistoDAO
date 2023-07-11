@@ -1,5 +1,8 @@
 pragma solidity >=0.8.0;
 
+import "https://github.com/Dexaran/ERC223-token-standard/blob/development/utils/Address.sol";
+import "https://github.com/Dexaran/ERC223-token-standard/blob/development/token/ERC223/IERC223Recipient.sol";
+
 /*This file is part of the DAO.
 
 The DAO is free software: you can redistribute it and/or modify
@@ -47,7 +50,14 @@ abstract contract TokenInterface {
     // @return Whether the transfer was successful or not
     function transfer(address _to, uint256 _amount) public virtual returns (bool success);
 
+    // @notice Send `_amount` tokens to `_to` from `msg.sender`
+    // @param _to The address of the recipient
+    // @param _amount The amount of tokens to be transferred
+    // @return Whether the transfer was successful or not
+    function transfer(address _to, uint256 _amount, bytes calldata _data) public virtual returns (bool success);
+
     event Transfer(address indexed _from, address indexed _to, uint256 _amount);
+    event TransferData(bytes _data);
 }
 
 
@@ -57,6 +67,7 @@ abstract contract Token is TokenInterface {
         return balances[_owner];
     }
 
+/*
     function transfer(address _to, uint256 _amount) public virtual override returns (bool success) {
         if (balances[msg.sender] >= _amount && _amount > 0) {
             balances[msg.sender] -= _amount;
@@ -64,8 +75,45 @@ abstract contract Token is TokenInterface {
             emit Transfer(msg.sender, _to, _amount);
             return true;
         } else {
-           return false;
+           revert("Not enough tokens to transfer");
         }
+    }
+*/
+
+    
+    /**
+     * @dev Transfer the specified amount of tokens to the specified address.
+     *      This function works the same with the previous one
+     *      but doesn't contain `_data` param.
+     *      Added due to backwards compatibility reasons.
+     *
+     * @param _to    Receiver address.
+     * @param _amount Amount of tokens that will be transferred.
+     */
+    function transfer(address _to, uint _amount) public virtual override returns (bool success)
+    {
+        bytes memory _empty = hex"00000000";
+        balances[msg.sender] = balances[msg.sender] - _amount;
+        balances[_to] = balances[_to] + _amount;
+        if(Address.isContract(_to)) {
+            IERC223Recipient(_to).tokenReceived(msg.sender, _amount, _empty);
+        }
+        emit Transfer(msg.sender, _to, _amount);
+        emit TransferData(_empty);
+        return true;
+    }
+
+    function transfer(address _to, uint256 _amount, bytes calldata _data) public virtual override returns (bool success) {
+        // Standard function transfer similar to ERC20 transfer with no _data .
+        // Added due to backwards compatibility reasons .
+        balances[msg.sender] = balances[msg.sender] - _amount;
+        balances[_to] = balances[_to] + _amount;
+        if(Address.isContract(_to)) {
+            IERC223Recipient(_to).tokenReceived(msg.sender, _amount, _data);
+        }
+        emit Transfer(msg.sender, _to, _amount);
+        emit TransferData(_data);
+        return true;
     }
 }
 
@@ -328,7 +376,11 @@ abstract contract DAOInterface {
     //address public curator;
 
     // Callisto DAO: multiple curators allowed.
-    mapping (address=>bool) public curator;
+    //mapping (address => bool) public curator;
+
+    // Callisto DAO v2: curators are weighted against each other.
+    //                  One curator can have more voting power on curatorOnly() type of proposals than other curators.
+    mapping (address => uint256) public curatorWeight;
 
 
     // The whitelist: List of addresses the DAO is allowed to send ether to
@@ -341,6 +393,9 @@ abstract contract DAOInterface {
     mapping (address => uint) public rewardToken;
     // Total supply of rewardToken
     uint256 public totalRewardToken;
+
+    // Total supply of rewardToken
+    uint256 public totalCuratorWeights;
 
     // The account used to manage the rewards which are to be distributed to the
     // DAO Token Holders of this DAO
@@ -392,8 +447,6 @@ abstract contract DAOInterface {
         uint256 proposalDeposit;
         // True if this proposal is to assign a new Curator
         bool newCurator;
-        // Data needed for splitting the DAO
-        SplitData[] splitData;
         // Number of Tokens in favor of the proposal
         uint256 yea;
         // Number of Tokens opposed to the proposal
@@ -408,18 +461,6 @@ abstract contract DAOInterface {
         mapping (address => bool) votedVeto;
         // Address of the shareholder who created the proposal
         address creator;
-    }
-
-    // Used only in the case of a newCurator proposal.
-    struct SplitData {
-        // The balance of the current DAO minus the deposit at the time of split
-        uint256 splitBalance;
-        // The total amount of DAO Tokens in existence at the time of split.
-        uint256 totalSupply;
-        // Amount of Reward Tokens owned by the DAO at the time of split.
-        uint256 rewardToken;
-        // The new DAO contract created at the time of split.
-        DAO newDAO;
     }
 
     // @dev Constructor setting the Curator and the address
@@ -472,8 +513,7 @@ abstract contract DAOInterface {
         uint256 _amount,
         string memory _description,
         bytes memory _transactionData,
-        uint256 _debatingPeriod,
-        bool _newCurator
+        uint256 _debatingPeriod
     ) payable public virtual returns (uint256 _proposalID)
     {
         // EMPTY
@@ -568,10 +608,6 @@ abstract contract DAOInterface {
     // @return total number of proposals ever created
     function numberOfProposals() public view virtual returns (uint256 _numberOfProposals);
 
-    // @param _proposalID Id of the new curator proposal
-    // @return Address of the new DAO
-    function getNewDAOAddress(uint256 _proposalID) public view virtual returns (address _newDAO);
-
     // @param _account The address of the account which is checked.
     // @return Whether the account is blocked (not allowed to transfer tokens) or not.
     function isBlocked(address _account) internal virtual returns (bool);
@@ -605,6 +641,12 @@ contract DAO is DAOInterface, Token, TokenCreation {
         _;
     }
 
+    modifier onlyCurators
+    {
+        require(isCurator(msg.sender), "This function is only available to curators of the DAO.");
+        _;
+    }
+
     function mint(address _receiver, uint256 _quantity) public 
     {
 
@@ -616,15 +658,22 @@ contract DAO is DAOInterface, Token, TokenCreation {
             _;
     }
 
+    function isCurator(address _who) public view returns (bool)
+    {
+        return curatorWeight[_who] > 0;
+    }
+
+    // Callisto DAO: curators will not be assigned upon deployment.
+    //               Instead curators will be manually chosen by the deployer of the DAO after deployment.
     constructor(
-        address _curator,
+        //address _curator,
         uint256 _proposalDeposit,
         uint256 _minTokensToCreate,
         uint256 _closingTime,
         address _privateCreation
     ) TokenCreation(_minTokensToCreate, _closingTime, _privateCreation) {
 
-        curator[_curator] = true;
+        //curator[_curator] = true;
         proposalDeposit = _proposalDeposit;
         rewardAccount = new ManagedAccount(address(this), false);
         DAOrewardAccount = new ManagedAccount(address(this), false);
@@ -639,11 +688,11 @@ contract DAO is DAOInterface, Token, TokenCreation {
         proposals.push(); // Pushes empty proposal to ID 0
 
         allowedRecipients[address(this)] = true;
-        allowedRecipients[_curator] = true;
+        allowedRecipients[msg.sender] = true;
     }
 
     receive() override external payable {
-            receiveEther();
+        receiveEther();
     }
 
 
@@ -657,24 +706,11 @@ contract DAO is DAOInterface, Token, TokenCreation {
         uint256 _amount,
         string memory _description,
         bytes memory _transactionData,
-        uint256 _debatingPeriod,
-        bool _newCurator
-    ) payable onlyTokenholders public override returns (uint256 _proposalID) {
+        uint256 _debatingPeriod
+    ) payable public override returns (uint256 _proposalID) {
 
         // Sanity check
-        if (_newCurator && (
-            _amount != 0
-            || _transactionData.length != 0
-            // || _recipient == curator
-            // Callisto DAO: check curator in a new way.
-            || curator[_recipient]
-            || msg.value > 0
-            || _debatingPeriod < minSplitDebatePeriod)) {
-            revert();
-        } else if (
-            !_newCurator
-            && (!isRecipientAllowed(_recipient) || (_debatingPeriod <  minProposalDebatePeriod))
-        ) {
+        if (!isRecipientAllowed(_recipient) || (_debatingPeriod <  minProposalDebatePeriod)) {
             revert();
         }
 
@@ -683,13 +719,10 @@ contract DAO is DAOInterface, Token, TokenCreation {
 
         if (!isFueled
             || block.timestamp < closingTime
-            || (msg.value < proposalDeposit && !_newCurator)) {
+            || (msg.value < proposalDeposit)) {
 
             revert();
         }
-
-        if (block.timestamp + _debatingPeriod < block.timestamp) // prevents overflow
-            revert();
 
         // to prevent a 51% attacker to convert the ether into deposit
         if (msg.sender == address(this))
@@ -704,10 +737,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
         p.votingDeadline = block.timestamp + _debatingPeriod;
         p.open = true;
         //p.proposalPassed = False; // that's default
-        p.newCurator = _newCurator;
         //if (_newCurator)                  // DEPRECATED EXPRESSION
         //    p.splitData.length++;
-        p.splitData.push();
         p.creator = msg.sender;
         p.proposalDeposit = msg.value;
 
@@ -717,7 +748,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
             _proposalID,
             _recipient,
             _amount,
-            _newCurator,
+            false,
             _description
         );
     }
@@ -735,7 +766,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
 
     function voteVeto(uint256 _proposalID) public
     {
-        require(curator[msg.sender], "Only curator can VETO a proposal.");
+        require(isCurator(msg.sender), "Only curator can VETO a proposal.");
         Proposal storage p = proposals[_proposalID];
         require(!p.votedVeto[msg.sender], "This address already VETOed a proposal.");
 
@@ -743,7 +774,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
         p.votedVeto[msg.sender] = true;
     }
 
-    function checkVetoCriteria(uint256 _proposalID) public returns (bool _passed)
+    function checkVetoCriteria(uint256 _proposalID) public view returns (bool _passed)
     {
         Proposal storage p = proposals[_proposalID];
         if (p.veto != 0)
@@ -877,7 +908,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
                 && p.recipient != address(extraBalance)
                 // && p.recipient != address(curator)) 
                 // Callisto DAO: check curator in a new way.
-                && !curator[p.recipient])
+                && !isCurator(p.recipient))
                 {
 
                 rewardToken[address(this)] += p.amount;
@@ -969,6 +1000,20 @@ contract DAO is DAOInterface, Token, TokenCreation {
     }
 
 
+    function transfer(address _to, uint256 _value, bytes calldata _data) public override returns (bool success) {
+        if (isFueled
+            && block.timestamp > closingTime
+            && !isBlocked(msg.sender)
+            && transferPaidOut(msg.sender, _to, _value)
+            && super.transfer(_to, _value)) {
+
+            return true;
+        } else {
+            revert();
+        }
+    }
+
+
     function transferWithoutReward(address _to, uint256 _value) public override returns (bool success) {
         if (!getMyReward())
             revert();
@@ -1003,7 +1048,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
     function changeAllowedRecipients(address _recipient, bool _allowed)  external override returns (bool _success) {
         //if (msg.sender != curator)
         //    revert();
-        if (!curator[msg.sender])
+        if (!isCurator(msg.sender))
             revert();
         allowedRecipients[_recipient] = _allowed;
         emit AllowedRecipientChanged(_recipient, _allowed);
@@ -1038,7 +1083,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
         // this can only be called after `quorumHalvingPeriod` has passed or at anytime
         // by the curator with a delay of at least `minProposalDebatePeriod` between the calls
         // Callisto DAO: check curator in a new way.
-        if ((lastTimeMinQuorumMet < (block.timestamp - quorumHalvingPeriod) || curator[msg.sender])
+        if ((lastTimeMinQuorumMet < (block.timestamp - quorumHalvingPeriod) || isCurator(msg.sender))
             && lastTimeMinQuorumMet < (block.timestamp - minProposalDebatePeriod)) {
             lastTimeMinQuorumMet = block.timestamp;
             minQuorumDivisor *= 2;
@@ -1051,10 +1096,6 @@ contract DAO is DAOInterface, Token, TokenCreation {
     function numberOfProposals() public view override returns (uint256 _numberOfProposals) {
         // Don't count index 0. It's used by isBlocked() and exists from start
         return proposals.length - 1;
-    }
-
-    function getNewDAOAddress(uint256 _proposalID) public view override returns (address _newDAO) {
-        return address(proposals[_proposalID].splitData[0].newDAO);
     }
 
     function isBlocked(address _account) internal override returns (bool) {
@@ -1071,5 +1112,39 @@ contract DAO is DAOInterface, Token, TokenCreation {
 
     function unblockMe() public override returns (bool) {
         return isBlocked(msg.sender);
+    }
+
+    // Proposal to modify curators weight,
+    // this can be also used to elect new curators (change their weight from 0 to higher values)
+    function changeCuratorWeight(
+        address _newCurator,
+        string memory _description,
+        bytes memory _transactionData,
+        uint256 _debatingPeriod,
+        uint256 _weight
+        ) public onlyCurators {
+        
+
+        uint256 _proposalID = proposals.length + 1;
+        Proposal storage p = proposals[_proposalID];
+        p.recipient = address(0);
+        p.amount = 0;
+        p.description = _description;
+        p.proposalHash = keccak256(abi.encodePacked(address(0), uint256(0), _transactionData));
+        p.votingDeadline = block.timestamp + _debatingPeriod;
+        p.open = true;
+        //p.proposalPassed = False; // that's default
+        //if (_newCurator)                  // DEPRECATED EXPRESSION
+        //    p.splitData.length++;
+        p.creator = msg.sender;
+        p.proposalDeposit = 0;
+
+        emit ProposalAdded(
+            _proposalID,
+            address(0),
+            0,
+            true,
+            _description
+        );
     }
 }

@@ -697,6 +697,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
     }
 
 
+
+
     function newProposal(
         address _recipient,
         uint256 _amount,
@@ -713,10 +715,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
         if (_debatingPeriod > 8 weeks)
             revert();
 
-        if (!isFueled
-            || block.timestamp < closingTime
-            || (msg.value < proposalDeposit)) {
-
+        if (block.timestamp < closingTime || (msg.value < proposalDeposit)) 
+        {
             revert();
         }
 
@@ -1192,5 +1192,10 @@ contract DAO is DAOInterface, Token, TokenCreation {
         
         p.yea += curatorWeight[msg.sender];
         p.votedYes[msg.sender] = true;
+    }
+
+    function addPaymentMethod(address _token, uint256 _proposalFeeMin) public onlyCurators
+    {
+
     }
 }

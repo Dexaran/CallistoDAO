@@ -430,6 +430,8 @@ abstract contract DAOInterface {
         // the new DAO).
         address recipient;
         // The amount to transfer to `recipient` if the proposal is accepted.
+        // If the proposal is a modification of curator weight then amount is
+        // a new weight of the `recipient` curator.
         uint256 amount;
         // A plain text description of the proposal
         string description;
@@ -996,7 +998,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
         p.open = false;
     }
 
-    function retrieveDAOReward(bool _toMembers) external override returns (bool _success) {
+    function retrieveDAOReward(bool _toMembers) external override returns (bool _success) 
+    {
         DAO dao = DAO(payable(msg.sender));
 
         if ((rewardToken[msg.sender] * DAOrewardAccount.accumulatedInput()) /

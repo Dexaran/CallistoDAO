@@ -791,6 +791,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
     ) onlyTokenholders public override returns (uint256 _voteID) {
 
         Proposal storage p = proposals[_proposalID];
+        require(!p.newCurator, "Callisto DAO: curator changes are voted through 'voteCurator' function.");
+
         if (p.votedYes[msg.sender]
             || p.votedNo[msg.sender]
             || block.timestamp >= p.votingDeadline) {
@@ -1180,5 +1182,15 @@ contract DAO is DAOInterface, Token, TokenCreation {
             true,
             _description
         );
+    }
+
+    function voteCurator(uint256 _proposalID, bool _supports) public onlyCurators
+    {
+        Proposal storage p = proposals[_proposalID];
+        require(p.newCurator, "Callisto DAO: funding proposals are voted through 'vote()' function.");
+        require(!p.votedYes[msg.sender], "Callisto DAO: msg.sender already voted on this proposal.");
+        
+        p.yea += curatorWeight[msg.sender];
+        p.votedYes[msg.sender] = true;
     }
 }

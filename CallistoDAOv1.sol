@@ -557,12 +557,6 @@ abstract contract DAOInterface {
         bytes memory _transactionData
     ) public virtual returns (bool _success);
 
-    // @dev can only be called by the DAO itself through a proposal
-    // updates the contract of the DAO by sending all ether and rewardTokens
-    // to the new DAO. The new DAO needs to be approved by the Curator
-    // @param _newContract the address of the new contract
-    function newContract(address _newContract) public virtual;
-
 
     // @notice Add a new possible recipient `_recipient` to the whitelist so
     // that the DAO can send transactions to them (using proposals)
@@ -626,7 +620,9 @@ abstract contract DAOInterface {
     );
     event Voted(uint256 indexed proposalID, bool position, address indexed voter);
     event ProposalTallied(uint256 indexed proposalID, bool result, uint256 quorum);
-    event NewCurator(address indexed _newCurator);
+    //event NewCurator(address indexed _newCurator);
+
+    event CuratorModification(address indexed curator, uint256 new_weight);
     event AllowedRecipientChanged(address indexed _recipient, bool _allowed);
 }
 
@@ -766,9 +762,10 @@ contract DAO is DAOInterface, Token, TokenCreation {
 
     function voteVeto(uint256 _proposalID) public
     {
-        require(isCurator(msg.sender), "Only curator can VETO a proposal.");
+        require(isCurator(msg.sender), "Callisto DAO: Only curator can VETO a proposal.");
         Proposal storage p = proposals[_proposalID];
-        require(!p.votedVeto[msg.sender], "This address already VETOed a proposal.");
+        require(!p.votedVeto[msg.sender], "Callisto DAO: This address already VETOed a proposal.");
+        require(!p.newCurator, "Callisto DAO: Can't VETO a modification of curator.");
 
         p.veto++;
         p.votedVeto[msg.sender] = true;
@@ -827,7 +824,16 @@ contract DAO is DAOInterface, Token, TokenCreation {
     ) public override returns (bool _success) {
 
         Proposal storage p = proposals[_proposalID];
-        
+
+        uint256 quorum = p.yea + p.nay;
+
+        // *****************************************************************
+        // Funding proposal.
+        // *****************************************************************
+
+        if(!p.newCurator)
+        {
+                    
         // Callisto DAO: Implement VETO feature with corresponding VETO criteria check.
         // NOTE: VETO criteria is subject to change in future versions.
         if(!checkVetoCriteria(_proposalID))
@@ -838,6 +844,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
         uint256 waitPeriod = p.newCurator
             ? splitExecutionPeriod
             : executeProposalPeriod;
+
+
         // If we are over deadline and waiting period, assert proposal is closed
         if (p.open && block.timestamp > p.votingDeadline + waitPeriod) {
             closeProposal(_proposalID);
@@ -867,17 +875,6 @@ contract DAO is DAOInterface, Token, TokenCreation {
         if (p.amount > actualBalance())
             proposalCheck = false;
 
-        uint256 quorum = p.yea + p.nay;
-
-        // require 53% for calling newContract()
-        if (_transactionData.length >= 4 && _transactionData[0] == 0x68
-            && _transactionData[1] == 0x37 && _transactionData[2] == 0xff
-            && _transactionData[3] == 0x1e
-            && quorum < minQuorum(actualBalance() + rewardToken[address(this)])) {
-
-                proposalCheck = false;
-        }
-
         if (quorum >= minQuorum(p.amount)) {
             //if (!p.creator.send(p.proposalDeposit))
             //    revert();
@@ -896,7 +893,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
             //    revert();
 
             (bool __success, bytes memory data) = p.recipient.call{value:p.amount}(_transactionData);
-            require(__success, "Subcall failure");
+            require(__success, "Callisto DAO: Subcall failure.");
 
             p.proposalPassed = true;
             _success = true;
@@ -915,11 +912,62 @@ contract DAO is DAOInterface, Token, TokenCreation {
                 totalRewardToken += p.amount;
             }
         }
+        }
 
-        closeProposal(_proposalID);
+        // *****************************************************************
+        // Curator modification proposal.
+        // *****************************************************************
+
+        else
+        {
+            uint256 waitPeriod = executeProposalPeriod;
+            // If we are over deadline and waiting period, assert proposal is closed
+            if (p.open && block.timestamp > p.votingDeadline + waitPeriod) {
+                closeProposal(_proposalID);
+                return true; // DEPRECATED EXPRESSION REWRITTEN
+            }
+            
+            // Check if the proposal can be executed
+            if (block.timestamp < p.votingDeadline  // has the voting deadline arrived?
+                // Have the votes been counted?
+                || !p.open
+                // Does the transaction code match the proposal?
+                || p.proposalHash != keccak256(abi.encodePacked(p.recipient, p.amount, _transactionData))) {
+
+                revert();
+            }
+
+            if(p.yea > totalCuratorWeights / 2)
+            {
+                // Curator modification passed.
+                uint256 old_weight = curatorWeight[p.recipient];
+                curatorWeight[p.recipient] = p.amount;
+                _success = true;
+
+                if(old_weight > p.amount)
+                {
+                    // The curators weight was decreased.
+                    totalCuratorWeights -= (old_weight - p.amount);
+                }
+                else
+                {
+                    // The curators weight was increased.
+                    totalCuratorWeights += (p.amount - old_weight);
+                }
+                emit CuratorModification(p.recipient, p.amount);
+            }
+            /*
+            else 
+            {
+                // Curator modification have NOT passed.
+                // closeProposal(_proposalID);  // Auto closes after previous IF
+            }
+            */
+        }
 
         // Initiate event
         emit ProposalTallied(_proposalID, _success, quorum);
+        closeProposal(_proposalID);
     }
 
 
@@ -929,22 +977,6 @@ contract DAO is DAOInterface, Token, TokenCreation {
             sumOfProposalDeposits -= p.proposalDeposit;
         p.open = false;
     }
-
-    function newContract(address _newContract) public override {
-        if (msg.sender != address(this) || !allowedRecipients[_newContract]) return;
-        // move all ether
-        //if (!_newContract.call.value(address(this).balance)()) {  /// DEPRECATED EXPRESSION REWRITTEN
-        //    revert();
-
-        payable(_newContract).transfer(address(this).balance);
-
-        //move all reward tokens
-        rewardToken[_newContract] += rewardToken[address(this)];
-        rewardToken[address(this)] = 0;
-        DAOpaidOut[_newContract] += DAOpaidOut[address(this)];
-        DAOpaidOut[address(this)] = 0;
-    }
-
 
     function retrieveDAOReward(bool _toMembers) external override returns (bool _success) {
         DAO dao = DAO(payable(msg.sender));
@@ -1117,32 +1149,34 @@ contract DAO is DAOInterface, Token, TokenCreation {
     // Proposal to modify curators weight,
     // this can be also used to elect new curators (change their weight from 0 to higher values)
     function changeCuratorWeight(
-        address _newCurator,
+        address _curator,
         string memory _description,
         bytes memory _transactionData,
         uint256 _debatingPeriod,
         uint256 _weight
         ) public onlyCurators {
         
+        require(_weight != curatorWeight[_curator], "Callisto DAO: proposal suggests no changes.");
 
         uint256 _proposalID = proposals.length + 1;
         Proposal storage p = proposals[_proposalID];
-        p.recipient = address(0);
-        p.amount = 0;
+        p.recipient = _curator;
+        p.amount = _weight;
         p.description = _description;
-        p.proposalHash = keccak256(abi.encodePacked(address(0), uint256(0), _transactionData));
+        p.proposalHash = keccak256(abi.encodePacked(_curator, _weight, _transactionData));
         p.votingDeadline = block.timestamp + _debatingPeriod;
         p.open = true;
         //p.proposalPassed = False; // that's default
-        //if (_newCurator)                  // DEPRECATED EXPRESSION
+        //if (_curator)                  // DEPRECATED EXPRESSION
         //    p.splitData.length++;
         p.creator = msg.sender;
         p.proposalDeposit = 0;
+        p.newCurator = true;
 
         emit ProposalAdded(
             _proposalID,
-            address(0),
-            0,
+            _curator,
+            _weight,
             true,
             _description
         );

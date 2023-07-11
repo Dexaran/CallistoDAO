@@ -364,6 +364,14 @@ abstract contract DAOInterface {
     // a fraction of total Ether spent plus balance of the DAO
     uint256 maxDepositDivisor = 100;
 
+    // A number of VETO votes required to permanently close a proposal.
+    // 1 by default. Auto-increases if no proposals were accepted for a certain time frame.
+    uint256 veto_quorum = 1;
+
+    // If no proposal was accepted AND there were VETOed proposals during this period
+    // the `veto_quorum` will increase by 1.
+    uint256 vetoQuorumIncrease = 8 weeks;
+
     // Proposals to spend the DAO's ether or to choose a new Curator
     Proposal[] public proposals;
     // The quorum needed for each proposal is partially calculated by
@@ -434,6 +442,8 @@ abstract contract DAOInterface {
         // If the proposal is a modification of curator weight then amount is
         // a new weight of the `recipient` curator.
         uint256 amount;
+        // Callisto DAO: Metadata of the proposal.
+        bytes data;
         // A plain text description of the proposal
         string description;
         // A unix timestamp, denoting the end of the voting period
@@ -644,6 +654,11 @@ contract DAO is DAOInterface, Token, TokenCreation {
     bool public setupMode = true;
     address public creator = msg.sender;
 
+    uint256 public last_proposal_accept_date = block.timestamp;
+    uint256 public proposals_VETOed_since_last_accepted = 0;
+
+    uint256 public number_of_curators = 0;
+
     // Further clarification required.
     // mapping (address => PaymentMethod) public payment_methods;
 
@@ -713,9 +728,6 @@ contract DAO is DAOInterface, Token, TokenCreation {
         return true;
     }
 
-
-
-
     function newProposal(
         address _recipient,
         uint256 _amount,
@@ -747,6 +759,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
         Proposal storage p = proposals[_proposalID];
         p.recipient = _recipient;
         p.amount = _amount;
+        p.data = _transactionData;
         p.description = _description;
         p.proposalHash = keccak256(abi.encodePacked(_recipient, _amount, _transactionData));
         p.votingDeadline = block.timestamp + _debatingPeriod;
@@ -790,10 +803,12 @@ contract DAO is DAOInterface, Token, TokenCreation {
         p.votedVeto[msg.sender] = true;
     }
 
+    // True  = proposal may pass.
+    // False = proposal is instantly closed.
     function checkVetoCriteria(uint256 _proposalID) public view returns (bool _passed)
     {
         Proposal storage p = proposals[_proposalID];
-        if (p.veto != 0)
+        if (p.veto >= veto_quorum)
         {
             return false;
         }
@@ -802,7 +817,6 @@ contract DAO is DAOInterface, Token, TokenCreation {
             return true;
         }
     }
-
 
     function vote(
         uint256 _proposalID,
@@ -860,6 +874,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
         if(!checkVetoCriteria(_proposalID))
         {
             closeProposal(_proposalID);
+            proposals_VETOed_since_last_accepted++;
         }
 
         uint256 waitPeriod = p.newCurator
@@ -896,7 +911,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
         if (p.amount > actualBalance())
             proposalCheck = false;
 
-        if (quorum >= minQuorum(p.amount)) {
+        if (quorum >= minQuorum(p.amount)) 
+        {
             //if (!p.creator.send(p.proposalDeposit))
             //    revert();
 
@@ -908,12 +924,27 @@ contract DAO is DAOInterface, Token, TokenCreation {
                 minQuorumDivisor = 5;
         }
 
+        if (
+            last_proposal_accept_date + vetoQuorumIncrease < block.timestamp 
+            && proposals_VETOed_since_last_accepted > 0
+            && veto_quorum < number_of_curators
+            )
+        {
+            // If no proposal was accepted within specified timeframe
+            // and some proposals were VETOed at the same time
+            // increase VETO criteria.
+
+            // VETO quorum can't be set higher than the total number of curators however.
+            veto_quorum++;
+        } 
+
         // Execute result
-        if (quorum >= minQuorum(p.amount) && p.yea > p.nay && proposalCheck) {
+        if (quorum >= minQuorum(p.amount) && p.yea > p.nay && proposalCheck) 
+        {
             //if (!p.recipient.call.value(p.amount)(_transactionData))
             //    revert();
 
-            (bool __success, bytes memory data) = p.recipient.call{value:p.amount}(_transactionData);
+            (bool __success, bytes memory data) = p.recipient.call{ value : p.amount }(_transactionData);
             require(__success, "Callisto DAO: Subcall failure.");
 
             p.proposalPassed = true;
@@ -962,6 +993,23 @@ contract DAO is DAOInterface, Token, TokenCreation {
             {
                 // Curator modification passed.
                 uint256 old_weight = curatorWeight[p.recipient];
+
+                
+                // Checking if a new curator was added OR existing curator was removed.
+                if(old_weight > 0 && p.amount == 0)
+                {
+                    number_of_curators--;
+
+                    if(veto_quorum == number_of_curators)
+                    {
+                        veto_quorum = number_of_curators - 1;
+                    }
+                }
+                if(old_weight == 0 && p.amount != 0)
+                {
+                    number_of_curators++;
+                }
+
                 curatorWeight[p.recipient] = p.amount;
                 _success = true;
 
@@ -1214,8 +1262,18 @@ contract DAO is DAOInterface, Token, TokenCreation {
         p.votedYes[msg.sender] = true;
     }
 
-    function SETUP_addCurator(address _curator, uint256 _weight) external onlySetupMode
+    function SETUP_setCurator(address _curator, uint256 _weight) external onlySetupMode
     {
+        // Checking if a new curator was added OR existing curator was removed.
+        if(curatorWeight[_curator] > 0 && _weight == 0)
+        {
+            number_of_curators--;
+        }
+        if(curatorWeight[_curator] == 0 && _weight != 0)
+        {
+            number_of_curators++;
+        }
+
         curatorWeight[_curator] = _weight;
     }
 

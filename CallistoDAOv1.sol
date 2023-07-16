@@ -429,6 +429,14 @@ abstract contract DAOInterface {
     // the accumulated sum of all current proposal deposits
     uint256 sumOfProposalDeposits;
 
+    // Callisto DAO: support of tokens as payments.
+    struct PaymentMethod
+    {
+        uint256 proposal_fee;
+        bool    accepted;
+        string  standard;
+    }
+
     // A proposal with `newCurator == false` represents a transaction
     // to be issued by this DAO
     // A proposal with `newCurator == true` represents a modification of curators weight
@@ -640,6 +648,8 @@ abstract contract DAOInterface {
         bool newCurator,
         string description
     );
+    event ProposalFee(uint256 indexed proposalID, uint256 amount, address indexed token);
+
     event Voted(uint256 indexed proposalID, bool position, address indexed voter);
     event ProposalTallied(uint256 indexed proposalID, bool result, uint256 quorum);
     //event NewCurator(address indexed _newCurator);
@@ -649,13 +659,18 @@ abstract contract DAOInterface {
 }
 
 // The DAO contract itself
-contract DAO is DAOInterface, Token, TokenCreation {
+contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
+
+    ERC223TransferInfo private tkn;
 
     bool public setupMode = true;
     address public creator = msg.sender;
+    bool private fee_paid_in_token = false;
 
     uint256 public last_proposal_accept_date = block.timestamp;
     uint256 public proposals_VETOed_since_last_accepted = 0;
+
+    mapping (address => PaymentMethod) public paymentMethods;
 
     uint256 public number_of_curators = 0;
 
@@ -723,6 +738,24 @@ contract DAO is DAOInterface, Token, TokenCreation {
         receiveEther();
     }
 
+    function tokenReceived(address _from, uint256 _value, bytes memory _data) public override
+    {
+
+        require(paymentMethods[msg.sender].accepted, "Callisto DAO: This token is not accepted.");
+
+        // 0xccd8ad79 is a signature of the newProposal( ... ) func.
+        if(_data[0] == bytes1(0xcc) && _data[1] == bytes1(0xd8) && _data[2] == bytes1(0xad) && _data[3] == 0x79)
+        {
+            tkn.token_contract = msg.sender;
+            tkn.value = _value;
+
+            if(paymentMethods[msg.sender].proposal_fee <= _value) { fee_paid_in_token = true; } 
+            // If the invoked function will be "newProposal()" then pass it to execution.
+            (bool success, bytes memory data) = address(this).delegatecall(_data);
+            fee_paid_in_token = false;
+        }
+    }
+
 
     function receiveEther() payable public override returns (bool) {
         return true;
@@ -744,11 +777,14 @@ contract DAO is DAOInterface, Token, TokenCreation {
         if (_debatingPeriod > 8 weeks)
             revert();
 
+/* Rewriting deprecated expression.
         if (block.timestamp < closingTime || (msg.value < proposalDeposit)) 
         {
             revert();
         }
-
+*/
+        require(block.timestamp > closingTime, "Incorrect closing time.");
+        require(msg.value > proposalDeposit || fee_paid_in_token, "Proposal submission fee is not paid.");
         // to prevent a 51% attacker to convert the ether into deposit
         if (msg.sender == address(this))
         {
@@ -767,7 +803,8 @@ contract DAO is DAOInterface, Token, TokenCreation {
         //p.proposalPassed = False; // that's default
         //if (_newCurator)                  // DEPRECATED EXPRESSION
         //    p.splitData.length++;
-        p.creator = msg.sender;
+        if(fee_paid_in_token) { p.creator = tkn.sender; }
+        else                  { p.creator = msg.sender; }
         p.proposalDeposit = msg.value;
 
         sumOfProposalDeposits += msg.value;
@@ -779,6 +816,15 @@ contract DAO is DAOInterface, Token, TokenCreation {
             false,
             _description
         );
+
+        if(!fee_paid_in_token)
+        {
+            emit ProposalFee(_proposalID, msg.value, address(0));
+        }
+        else
+        {
+            emit ProposalFee(_proposalID, tkn.value, tkn.token_contract);
+        }
     }
 
 
@@ -1252,7 +1298,7 @@ contract DAO is DAOInterface, Token, TokenCreation {
         );
     }
 
-    function voteCurator(uint256 _proposalID, bool _supports) public onlyCurators
+    function curatorVote(uint256 _proposalID, bool _supports) public onlyCurators
     {
         Proposal storage p = proposals[_proposalID];
         require(p.newCurator, "Callisto DAO: funding proposals are voted through 'vote()' function.");
@@ -1278,11 +1324,10 @@ contract DAO is DAOInterface, Token, TokenCreation {
     }
 
 
-    /* Just a template for now. Multicurrency DAO is not yet implemented.
     // Further clarifications required.
     function addPaymentMethod(address _token, uint256 _proposalFeeMin) public onlyCurators
     {
-
+        paymentMethods[_token].accepted = true;
+        paymentMethods[_token].proposal_fee = _proposalFeeMin;
     }
-    */
 }

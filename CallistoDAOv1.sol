@@ -210,17 +210,6 @@ along with the DAO.  If not, see <http://www.gnu.org/licenses/>.
 
 abstract contract TokenCreationInterface {
 
-    // End of token creation, in Unix time
-    uint256 public closingTime;
-    // Minimum fueling goal of the token creation, denominated in tokens to
-    // be created
-    uint256 public minTokensToCreate;
-    // True if the DAO reached its minimum fueling goal, false otherwise
-    bool public isFueled;
-    // For DAO splits - if privateCreation is 0, then it is a public token
-    // creation, otherwise only the address stored in privateCreation is
-    // allowed to create tokens
-    address public privateCreation;
     // hold extra ether which has been sent after the DAO token
     // creation rate has increased
     ManagedAccount public extraBalance;
@@ -241,86 +230,16 @@ abstract contract TokenCreationInterface {
         //  uint256 _closingTime,
         //  address _privateCreation
     //  );
-
-    // @notice Create Token with `_tokenHolder` as the initial owner of the Token
-    // @param _tokenHolder The address of the Tokens's recipient
-    // @return Whether the token creation was successful
-    function createTokenProxy(address _tokenHolder) payable virtual public returns (bool success);
-
-    // @notice Refund `msg.sender` in the case the Token Creation did
-    // not reach its minimum fueling goal
-    function refund() virtual public;
-
-    // @return The divisor used to calculate the token creation rate during
-    // the creation phase
-    function divisor() virtual view public returns (uint256 _divisor);
-
-    event FuelingToDate(uint256 value);
     event CreatedToken(address indexed to, uint256 amount);
-    event Refund(address indexed to, uint256 value);
 }
 
 
 contract TokenCreation is TokenCreationInterface, Token {
 
-    constructor(
-        uint256 _minTokensToCreate,
-        uint256 _closingTime,
-        address _privateCreation) {
-
-        closingTime = _closingTime;
-        minTokensToCreate = _minTokensToCreate;
-        privateCreation = _privateCreation;
+    constructor(uint256 _initial_supply) {
+        totalSupply = _initial_supply;
+        balances[msg.sender] = _initial_supply;
         extraBalance = new ManagedAccount(address(this), true);
-    }
-
-    function createTokenProxy(address _tokenHolder) payable override public returns (bool success) {
-        if (block.timestamp < closingTime && msg.value > 0
-            && (privateCreation == address(0) || privateCreation == msg.sender)) {
-
-            uint256 token = (msg.value * 20) / divisor();
-            address(extraBalance).call{value: msg.value - token};
-            balances[_tokenHolder] += token;
-            totalSupply += token;
-            weiGiven[_tokenHolder] += msg.value;
-            emit CreatedToken(_tokenHolder, token);
-            if (totalSupply >= minTokensToCreate && !isFueled) {
-                isFueled = true;
-                emit FuelingToDate(totalSupply);
-            }
-            return true;
-        }
-        revert();
-    }
-
-    function refund() override public {
-        if (block.timestamp > closingTime && !isFueled) {
-            // Get extraBalance - will only succeed when called for the first time
-            if (address(extraBalance).balance >= extraBalance.accumulatedInput())
-                extraBalance.payOut(address(this), extraBalance.accumulatedInput());
-
-            // Execute refund
-            msg.sender.call{value: weiGiven[msg.sender]};
-            emit Refund(msg.sender, weiGiven[msg.sender]);
-            totalSupply -= balances[msg.sender];
-            balances[msg.sender] = 0;
-            weiGiven[msg.sender] = 0;
-        }
-    }
-
-    function divisor() override view public returns (uint256 _divisor) {
-        // The number of (base unit) tokens per wei is calculated
-        // as `msg.value` * 20 / `divisor`
-        // The fueling period starts with a 1:1 ratio
-        if (closingTime - 2 weeks > block.timestamp) {
-            return 20;
-        // Followed by 10 days with a daily creation rate increase of 5%
-        } else if (closingTime - 4 days > block.timestamp) {
-            return (20 + (block.timestamp - (closingTime - 2 weeks)) / (1 days));
-        // The last 4 days there is a view creation rate ratio of 1:1.5
-        } else {
-            return 30;
-        }
     }
 }
 /*
@@ -728,10 +647,8 @@ contract CallistoDAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
     constructor(
         //address _curator,
         uint256 _proposalDeposit,
-        uint256 _minTokensToCreate,
-        uint256 _closingTime,
-        address _privateCreation
-    ) TokenCreation(_minTokensToCreate, _closingTime, _privateCreation) {
+        uint256 _initial_supply
+    ) TokenCreation(_initial_supply) {
 
         //curator[_curator] = true;
         proposalDeposit = _proposalDeposit;
@@ -800,7 +717,6 @@ contract CallistoDAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
             revert();
         }
 */
-        require(block.timestamp > closingTime, "Incorrect closing time.");
         require(msg.value > proposalDeposit || fee_paid_in_token, "Proposal submission fee is not paid.");
         // to prevent a 51% attacker to convert the ether into deposit
         if (msg.sender == address(this))
@@ -1152,9 +1068,7 @@ contract CallistoDAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
 
 
     function transfer(address _to, uint256 _value) public override returns (bool success) {
-        if (isFueled
-            && block.timestamp > closingTime
-            && !isBlocked(msg.sender)
+        if (!isBlocked(msg.sender)
             && transferPaidOut(msg.sender, _to, _value)
             && super.transfer(_to, _value)) {
 
@@ -1166,9 +1080,7 @@ contract CallistoDAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
 
 
     function transfer(address _to, uint256 _value, bytes calldata _data) public override returns (bool success) {
-        if (isFueled
-            && block.timestamp > closingTime
-            && !isBlocked(msg.sender)
+        if (!isBlocked(msg.sender)
             && transferPaidOut(msg.sender, _to, _value)
             && super.transfer(_to, _value)) {
 

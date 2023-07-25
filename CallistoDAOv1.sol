@@ -437,6 +437,17 @@ abstract contract DAOInterface {
         string  standard;
     }
 
+    // Callisto DAO feature
+    struct MintTokensProposal
+    {
+        uint256 deadline;
+        uint256 support_weight;
+        mapping (address => bool) voted;
+        address recipient;
+        uint256 quantity;
+        bool executed;
+    }
+
     // A proposal with `newCurator == false` represents a transaction
     // to be issued by this DAO
     // A proposal with `newCurator == true` represents a modification of curators weight
@@ -661,16 +672,22 @@ abstract contract DAOInterface {
 // The DAO contract itself
 contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
 
+    // Functions added for the CallistoDAO.
+
     ERC223TransferInfo private tkn;
 
-    bool public setupMode = true;
+    uint256 public default_minting_quorum = 600; // 600 is 60%.
+    uint256 public default_minting_deadline_min = 2 weeks;
+
     address public creator = msg.sender;
+    bool public setupMode = true;
     bool private fee_paid_in_token = false;
 
     uint256 public last_proposal_accept_date = block.timestamp;
     uint256 public proposals_VETOed_since_last_accepted = 0;
 
-    mapping (address => PaymentMethod) public paymentMethods;
+    mapping (address => PaymentMethod) public payment_methods;
+    MintTokensProposal[] public mint_tokens_proposals;
 
     uint256 public number_of_curators = 0;
 
@@ -738,10 +755,10 @@ contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
         receiveEther();
     }
 
-    function tokenReceived(address _from, uint256 _value, bytes memory _data) public override
+    function tokenReceived(address _from, uint256 _value, bytes memory _data) public override returns (bytes4)
     {
 
-        require(paymentMethods[msg.sender].accepted, "Callisto DAO: This token is not accepted.");
+        require(payment_methods[msg.sender].accepted, "Callisto DAO: This token is not accepted.");
 
         // 0xccd8ad79 is a signature of the newProposal( ... ) func.
         if(_data[0] == bytes1(0xcc) && _data[1] == bytes1(0xd8) && _data[2] == bytes1(0xad) && _data[3] == 0x79)
@@ -749,7 +766,7 @@ contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
             tkn.token_contract = msg.sender;
             tkn.value = _value;
 
-            if(paymentMethods[msg.sender].proposal_fee <= _value) { fee_paid_in_token = true; } 
+            if(payment_methods[msg.sender].proposal_fee <= _value && payment_methods[msg.sender].proposal_fee != 0) { fee_paid_in_token = true; } 
             // If the invoked function will be "newProposal()" then pass it to execution.
             (bool success, bytes memory data) = address(this).delegatecall(_data);
             fee_paid_in_token = false;
@@ -1323,11 +1340,56 @@ contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
         curatorWeight[_curator] = _weight;
     }
 
+    // TODO: Add events to special proposals.
+    function proposeMintTokens(address _recipient, uint256 _quantity, uint256 _deadline) external onlyCurators
+    {
+        require(_deadline > default_minting_deadline_min, "Callisto DAO: deafline can not be less than default min.");
+        uint256 _proposalID = mint_tokens_proposals.length + 1;
+        MintTokensProposal storage p = mint_tokens_proposals[_proposalID];
+        p.recipient = _recipient;
+        p.quantity = _quantity;
+        p.deadline = _deadline;
+        // p.voted[msg.sender] = true;
+        // p.support_weight += curatorWeight[msg.sender];
+    }
+
+    function voteMintTokens(uint256 _proposalID, bool _support) external onlyCurators
+    {
+        MintTokensProposal storage p = mint_tokens_proposals[_proposalID];
+
+        require(p.deadline < block.timestamp, "Callisto DAO: proposal expired.");
+
+        if(_support)
+        {
+            p.support_weight += curatorWeight[msg.sender];
+        }
+        p.voted[msg.sender] = true;
+    }
+
+    function executeMintProposal(uint256 _proposalID) external onlyCurators
+    {
+        MintTokensProposal storage p = mint_tokens_proposals[_proposalID];
+        require(block.timestamp > p.deadline, "Callisto DAO: proposal voting is not over yet.");
+        require(!p.executed, "Callisto DAO: this proposal is already executed.");
+        if(p.support_weight / totalCuratorWeights >= default_minting_quorum / 1000)
+        {
+            mint(p.recipient, p.quantity);
+        }
+        p.executed = true;
+    }
 
     // Further clarifications required.
     function addPaymentMethod(address _token, uint256 _proposalFeeMin) public onlyCurators
     {
-        paymentMethods[_token].accepted = true;
-        paymentMethods[_token].proposal_fee = _proposalFeeMin;
+        payment_methods[_token].accepted = true;
+        payment_methods[_token].proposal_fee = _proposalFeeMin;
+    }
+
+    // CallistoDAO: removal needs to be voted in the future
+    
+    function removePaymentMethod(address _token) public onlyCurators
+    {
+        payment_methods[_token].accepted = false;
+        payment_methods[_token].proposal_fee = 0;
     }
 }

@@ -7,3 +7,7 @@ Here you can find the original DAO whitepaper (unavailable on Slock.it resources
 ## Original DAO
 
 The folder [DAO2016](https://github.com/Dexaran/CallistoDAO/tree/main/DAO2016) contains the original code of TheDAO1.0 rewritten with 0.8.8 solidity syntax by @Dexaran.
+
+## Deployment
+
+- CallistoDAO.sol https://explorer.callisto.network/address/0xCc4e3686301D8618765FFDD4D527F995F00b33Be/transactions

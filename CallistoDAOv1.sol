@@ -670,7 +670,7 @@ abstract contract DAOInterface {
 }
 
 // The DAO contract itself
-contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
+contract CallistoDAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
 
     // Functions added for the CallistoDAO.
 
@@ -1112,7 +1112,7 @@ contract DAO is DAOInterface, Token, TokenCreation, IERC223Recipient {
 
     function retrieveDAOReward(bool _toMembers) external override returns (bool _success) 
     {
-        DAO dao = DAO(payable(msg.sender));
+        CallistoDAO dao = CallistoDAO(payable(msg.sender));
 
         if ((rewardToken[msg.sender] * DAOrewardAccount.accumulatedInput()) /
             totalRewardToken < DAOpaidOut[msg.sender])

@@ -1,4 +1,4 @@
-pragma solidity >=0.8.0;
+pragma solidity 0.8.10;
 
 import "https://github.com/Dexaran/ERC223-token-standard/blob/development/utils/Address.sol";
 import "https://github.com/Dexaran/ERC223-token-standard/blob/development/token/ERC223/IERC223Recipient.sol";
